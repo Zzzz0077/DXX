@@ -1,0 +1,138 @@
+
+import json
+import requests
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+stuInfo = []
+def read_user_data(file_name):
+    try:
+        with open(file_name, 'r', encoding='utf-8') as reader:
+            userlist = json.load(reader)
+    except FileNotFoundError:
+        print(f"{file_name} 文件不存在")
+        userlist = {}
+    except json.JSONDecodeError:
+        print(f"{file_name} 文件格式不正确")
+        userlist = {}
+
+    return userlist
+def sessionBuilder(openid: str):
+    session = requests.session()
+    session.headers = {
+        "Connection": "keep-alive",
+        # "Content-Length": "",
+        "Authorization": openid,
+        "charset": "utf-8",
+        "requesttype": "",
+        "openid": openid,
+        "content-type": "application/json",
+        "Accept-Encoding": "gzip,compress,br,deflate",
+        "Referer": "https://servicewechat.com/wx88ccb2655c6720e2/51/page-frame.html",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 7.1.1; MI 6 Build/NMF26X; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/57.0.2987.132 MQQBrowser/6.2 TBS/043807 Mobile Safari/537.36 MicroMessenger/6.6.1.1220(0x26060135) NetType/4G Language/zh_CN MicroMessenger/6.6.1.1220(0x26060135) NetType/4G Language/zh_CN miniProgram"
+    }
+    session.verify = False # 如果需要开代理或者抓包请将其设置为False
+    return session
+def retakesList(r: requests.Session):
+    try:
+        url = "https://www.jxqingtuan.cn/api-client/classRecord/retakesList"
+        response = r.get(url)
+        response.raise_for_status()  # 将触发HTTP错误异常
+        result = response.json()['data']['JxgqtClassVoList']
+        lst = []  # 存放未学习期数
+        for item in result:
+            if item['learn'] == False:  # 还没学的
+                per = {"d": int(item['duration']), "i": int(item['id']),"t":item['title']}  # 单个未学习信息
+                lst.append(per)
+        return lst
+    except (requests.exceptions.ConnectionError, requests.exceptions.HTTPError, KeyError):
+        print("获取未学习期数列表失败，跳过当前用户")
+        return []
+def send_request(url, payload, session, method='post'):
+    try:
+        if method == 'post':
+            response = session.post(url, data=json.dumps(payload))
+        else:
+            response = session.get(url)
+        if response.status_code == 200:
+            return True
+    except requests.exceptions.RequestException:
+        return False
+    return False
+def learningRecords(r: requests.Session, openid: str, yid: int):
+    # 记录学习第一条请求
+    url = "https://www.jxqingtuan.cn/api-client/classRecord/learningRecords"
+    payload = {"accessToken": openid, "course": yid, "retakes": 0}
+    req = r.post(url, data=json.dumps(payload))
+    if req.status_code == 200:
+        return True
+    else:
+        return False
+def addOrUpdateCourse(r: requests.Session, userid: str, orgid: str, duration: int, yid: int):
+    # 记录学习第二条请求
+    url = "https://www.jxqingtuan.cn/api-client/userScore/addOrUpdateCourse"
+    payload = {"studyTime": duration + 100, "classId": yid, "userId": userid, "areaId1": orgid[:5],
+               "areaId2": orgid[:9], "areaId3": orgid[:13], "areaId4": orgid, "status": 1, "retakes": 0}
+    req = r.post(url, data=json.dumps(payload))
+    if req.status_code == 200:
+        if "无法学习" in req.json()['msg']:
+            url = "https://www.jxqingtuan.cn/api-client/userScore/addOrUpdateCourse"
+            payload = {"studyTime": duration + 100, "classId": yid, "userId": userid, "areaId1": orgid[:5],
+                       "areaId2": orgid[:9], "areaId3": orgid[:13], "areaId4": orgid, "status": 1, "retakes": 1} # 这里改成1似乎可以补学
+            r.post(url, data=json.dumps(payload))
+        return True
+    else:
+        return False
+
+if __name__ == '__main__':
+    print(""" """)
+    userlist_file = input("请输入用户信息文件的路径: ")
+    start_line = int(input("请输入起始行号（从1开始）: "))
+    userlist = [] # 用户信息
+    try:
+        with open(userlist_file, 'r', encoding='utf-8') as reader:
+            for line_number, item in enumerate(reader, start=1):
+                if line_number < start_line:
+                    continue  # 跳过直到达到指定的起始行号
+                try:
+                    info = item.strip().split("|")
+                    if len(info) != 5:
+                        raise Exception(f"数据格式错误: {item}")
+                    userlist.append([info[0], info[1], info[2], info[3], info[4]])
+                except Exception as e:
+                    print(f"处理第{line_number}行记录失败: {e}")
+    except FileNotFoundError:
+        print(f"文件不存在：{userlist_file}")
+    except Exception as e:
+        print(f"处理{userlist_file}文件异常: {e}")
+    if userlist:
+        print(f"成功处理{len(userlist)}条记录, 开始执行学习操作")
+    else:
+        print("没有成功获取到userlist数据")
+    for index, userData in enumerate(userlist, start=start_line):
+        try:
+            openid = userData[3]  # 假设第四个元素是openid
+            session = sessionBuilder(openid)
+            initial_lst = retakesList(session)[:3]
+            print(f"当前用户 {userData[0]} 的最近3个未学习期数: {initial_lst}")
+
+            for item in initial_lst:
+                step1 = learningRecords(session, openid=openid, yid=item['i'])
+                if step1:
+                    #time.sleep(1)
+                    userid = userData[0]  # 假设第一个元素是userid
+                    nid = userData[1]  # 假设第二个元素是nid
+                    step2 = addOrUpdateCourse(session, userid=userid, orgid=nid, yid=item['i'], duration=item['d'])
+                    if step2:
+                        print("step1成功    step2成功")
+                        print(f"成功完成学习期数: {item['i']}")
+                    else:
+                        continue
+                else:
+                    continue
+                #time.sleep(1)
+        except Exception as e:
+            print(f"处理用户 {userData[2]} 时发生错误: {e}, 跳过当前用户")
+            continue
+        print(f"{userid} - 学习成功 (文件：{userlist_file}, 行号：{index})")
+
+    print(f"成功完成{len(userlist)}次学习, 请等待后台数据刷新")
